@@ -24,6 +24,8 @@ sudo bash conduit.sh
 - **Easy Management** - Powerful CLI commands or interactive menu
 - **Complete Uninstall** - Clean removal of all components
 
+![Conduit Manager Menu](conduitmenu.png)
+
 ## Supported Distributions
 
 | Family | Distributions |
@@ -71,14 +73,14 @@ conduit help         # Show help message
 | `max-clients` | 200 | 1-1000 | Maximum concurrent proxy clients |
 | `bandwidth` | 5 | 1-40 | Bandwidth limit per peer (Mbps) |
 
-**Recommended values based on server RAM:**
+**Recommended values based on server CPU:**
 
-| RAM | Max Clients |
-|-----|-------------|
-| 8GB+ | 1000 |
-| 4-8GB | 700 |
-| 2-4GB | 400 |
-| <2GB | 200 |
+| CPU Cores | Max Clients |
+|-----------|-------------|
+| 8+ Cores | 800 |
+| 4 Cores | 400 |
+| 2 Cores | 200 |
+| 1 Core | 100 |
 
 ## Installation Options
 
@@ -178,14 +180,14 @@ conduit help         # راهنما
 | `max-clients` | 200 | 1-1000 | حداکثر کاربران همزمان |
 | `bandwidth` | 5 | 1-40 | محدودیت پهنای باند (Mbps) |
 
-**مقادیر پیشنهادی:**
+**مقادیر پیشنهادی بر اساس پردازنده (CPU):**
 
-| رم سرور | حداکثر کاربران |
-|---------|----------------|
-| +8 گیگ | 1000 |
-| 4-8 گیگ | 700 |
-| 2-4 گیگ | 400 |
-| زیر 2 گیگ | 200 |
+| تعداد هسته | حداکثر کاربران |
+|------------|----------------|
+| +8 هسته | 800 |
+| 4 هسته | 400 |
+| 2 هسته | 200 |
+| 1 هسته | 100 |
 
 ## پیش‌نیازها
 
