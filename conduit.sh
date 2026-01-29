@@ -2259,10 +2259,10 @@ show_status() {
         if [ -n "${_c_up[$i]}" ]; then
             local bytes=$(echo "${_c_up[$i]}" | awk '{
                 val=$1; unit=toupper($2)
-                if (unit ~ /^KB/) val*=1024
-                else if (unit ~ /^MB/) val*=1048576
-                else if (unit ~ /^GB/) val*=1073741824
-                else if (unit ~ /^TB/) val*=1099511627776
+                if (unit ~ /^KIB/ || unit ~ /^KB/) val*=1024
+                else if (unit ~ /^MIB/ || unit ~ /^MB/) val*=1048576
+                else if (unit ~ /^GIB/ || unit ~ /^GB/) val*=1073741824
+                else if (unit ~ /^TIB/ || unit ~ /^TB/) val*=1099511627776
                 printf "%.0f", val
             }')
             total_up_bytes=$((total_up_bytes + ${bytes:-0}))
@@ -2270,10 +2270,10 @@ show_status() {
         if [ -n "${_c_down[$i]}" ]; then
             local bytes=$(echo "${_c_down[$i]}" | awk '{
                 val=$1; unit=toupper($2)
-                if (unit ~ /^KB/) val*=1024
-                else if (unit ~ /^MB/) val*=1048576
-                else if (unit ~ /^GB/) val*=1073741824
-                else if (unit ~ /^TB/) val*=1099511627776
+                if (unit ~ /^KIB/ || unit ~ /^KB/) val*=1024
+                else if (unit ~ /^MIB/ || unit ~ /^MB/) val*=1048576
+                else if (unit ~ /^GIB/ || unit ~ /^GB/) val*=1073741824
+                else if (unit ~ /^TIB/ || unit ~ /^TB/) val*=1099511627776
                 printf "%.0f", val
             }')
             total_down_bytes=$((total_down_bytes + ${bytes:-0}))
@@ -2436,6 +2436,328 @@ show_status() {
         echo -e "  Tracker:      ${YELLOW}Inactive${NC}${EL}"
     fi
     echo -e "${EL}"
+}
+
+show_status_json() {
+    # Output status in JSON format for machine consumption
+    
+    # Helper: parse uptime string like "2h 30m 15s" or "1d 5h" to seconds
+    parse_uptime_to_seconds() {
+        local uptime_str="$1"
+        local seconds=0
+        # Extract days, hours, minutes, seconds
+        local d=$(echo "$uptime_str" | grep -oE '[0-9]+d' | tr -d 'd')
+        local h=$(echo "$uptime_str" | grep -oE '[0-9]+h' | tr -d 'h')
+        local m=$(echo "$uptime_str" | grep -oE '[0-9]+m' | tr -d 'm')
+        local s=$(echo "$uptime_str" | grep -oE '[0-9]+s' | tr -d 's')
+        [ -n "$d" ] && seconds=$((seconds + d * 86400))
+        [ -n "$h" ] && seconds=$((seconds + h * 3600))
+        [ -n "$m" ] && seconds=$((seconds + m * 60))
+        [ -n "$s" ] && seconds=$((seconds + s))
+        echo "$seconds"
+    }
+
+    # Helper: parse RAM string like "256 MiB" or "1.5 GiB" to bytes
+    parse_ram_to_bytes() {
+        local ram_str="$1"
+        echo "$ram_str" | awk '{
+            val=$1; unit=toupper($2)
+            gsub(/[^0-9.]/, "", val)
+            if (unit ~ /^KIB/ || unit ~ /^KB/) val*=1024
+            else if (unit ~ /^MIB/ || unit ~ /^MB/) val*=1048576
+            else if (unit ~ /^GIB/ || unit ~ /^GB/) val*=1073741824
+            else if (unit ~ /^TIB/ || unit ~ /^TB/) val*=1099511627776
+            printf "%.0f", val
+        }'
+    }
+
+    # Helper: format bandwidth for display
+    format_bandwidth() {
+        local bw="$1"
+        if [ "$bw" = "-1" ]; then
+            echo "Unlimited"
+        else
+            echo "${bw} Mbps"
+        fi
+    }
+
+    # Cache docker ps output once
+    local docker_ps_cache=$(docker ps 2>/dev/null)
+
+    # Count running containers and cache per-container stats
+    local running_count=0
+    declare -A _c_running _c_conn _c_cing _c_up _c_down
+    local total_connecting=0
+    local total_connected=0
+    local uptime=""
+
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local cname=$(get_container_name $i)
+        _c_running[$i]=false
+        _c_conn[$i]="0"
+        _c_cing[$i]="0"
+        _c_up[$i]=""
+        _c_down[$i]=""
+
+        if echo "$docker_ps_cache" | grep -q "[[:space:]]${cname}$"; then
+            _c_running[$i]=true
+            running_count=$((running_count + 1))
+            local logs=$(docker logs --tail 50 "$cname" 2>&1 | grep "STATS" | tail -1)
+            if [ -n "$logs" ]; then
+                IFS='|' read -r c_connecting c_connected c_up_val c_down_val c_uptime_val <<< $(echo "$logs" | awk '{
+                    cing=0; conn=0; up=""; down=""; ut=""
+                    for(j=1;j<=NF;j++){
+                        if($j=="Connecting:") cing=$(j+1)+0
+                        else if($j=="Connected:") conn=$(j+1)+0
+                        else if($j=="Up:"){for(k=j+1;k<=NF;k++){if($k=="|"||$k~/Down:/)break; up=up (up?" ":"") $k}}
+                        else if($j=="Down:"){for(k=j+1;k<=NF;k++){if($k=="|"||$k~/Uptime:/)break; down=down (down?" ":"") $k}}
+                        else if($j=="Uptime:"){for(k=j+1;k<=NF;k++){ut=ut (ut?" ":"") $k}}
+                    }
+                    printf "%d|%d|%s|%s|%s", cing, conn, up, down, ut
+                }')
+                _c_conn[$i]="${c_connected:-0}"
+                _c_cing[$i]="${c_connecting:-0}"
+                _c_up[$i]="${c_up_val}"
+                _c_down[$i]="${c_down_val}"
+                total_connecting=$((total_connecting + ${c_connecting:-0}))
+                total_connected=$((total_connected + ${c_connected:-0}))
+                if [ -z "$uptime" ]; then
+                    uptime="${c_uptime_val}"
+                fi
+            fi
+        fi
+    done
+    local connecting=$total_connecting
+    local connected=$total_connected
+
+    # Parse uptime to seconds
+    local uptime_seconds=0
+    if [ -n "$uptime" ]; then
+        uptime_seconds=$(parse_uptime_to_seconds "$uptime")
+    fi
+
+    # Aggregate upload/download across all containers
+    local total_up_bytes=0
+    local total_down_bytes=0
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        if [ -n "${_c_up[$i]}" ]; then
+            local bytes=$(echo "${_c_up[$i]}" | awk '{
+                val=$1; unit=toupper($2)
+                if (unit ~ /^KIB/ || unit ~ /^KB/) val*=1024
+                else if (unit ~ /^MIB/ || unit ~ /^MB/) val*=1048576
+                else if (unit ~ /^GIB/ || unit ~ /^GB/) val*=1073741824
+                else if (unit ~ /^TIB/ || unit ~ /^TB/) val*=1099511627776
+                printf "%.0f", val
+            }')
+            total_up_bytes=$((total_up_bytes + ${bytes:-0}))
+        fi
+        if [ -n "${_c_down[$i]}" ]; then
+            local bytes=$(echo "${_c_down[$i]}" | awk '{
+                val=$1; unit=toupper($2)
+                if (unit ~ /^KIB/ || unit ~ /^KB/) val*=1024
+                else if (unit ~ /^MIB/ || unit ~ /^MB/) val*=1048576
+                else if (unit ~ /^GIB/ || unit ~ /^GB/) val*=1073741824
+                else if (unit ~ /^TIB/ || unit ~ /^TB/) val*=1099511627776
+                printf "%.0f", val
+            }')
+            total_down_bytes=$((total_down_bytes + ${bytes:-0}))
+        fi
+    done
+
+    # Format upload/download for display
+    local upload_display=""
+    local download_display=""
+    if [ "$total_up_bytes" -gt 0 ]; then
+        upload_display=$(awk -v b="$total_up_bytes" 'BEGIN {
+            if (b >= 1099511627776) printf "%.2f TB", b/1099511627776
+            else if (b >= 1073741824) printf "%.2f GB", b/1073741824
+            else if (b >= 1048576) printf "%.2f MB", b/1048576
+            else if (b >= 1024) printf "%.2f KB", b/1024
+            else printf "%d B", b
+        }')
+    fi
+    if [ "$total_down_bytes" -gt 0 ]; then
+        download_display=$(awk -v b="$total_down_bytes" 'BEGIN {
+            if (b >= 1099511627776) printf "%.2f TB", b/1099511627776
+            else if (b >= 1073741824) printf "%.2f GB", b/1073741824
+            else if (b >= 1048576) printf "%.2f MB", b/1048576
+            else if (b >= 1024) printf "%.2f KB", b/1024
+            else printf "%d B", b
+        }')
+    fi
+
+    # Resource stats
+    local app_cpu_percent=""
+    local app_cpu_raw=""
+    local app_ram=""
+    local app_ram_used_bytes=""
+    local app_ram_limit_bytes=""
+    local sys_cpu=""
+    local sys_ram_used=""
+    local sys_ram_total=""
+    local sys_ram_pct=""
+    local sys_ram_used_bytes=""
+    local sys_ram_total_bytes=""
+    local rx_mbps="0"
+    local tx_mbps="0"
+    local num_cores=$(get_cpu_cores)
+
+    if [ "$running_count" -gt 0 ]; then
+        local stats=$(get_container_stats)
+        local raw_app_cpu=$(echo "$stats" | awk '{print $1}' | tr -d '%')
+        
+        if [[ "$raw_app_cpu" =~ ^[0-9.]+$ ]]; then
+            app_cpu_percent=$(awk -v cpu="$raw_app_cpu" -v cores="$num_cores" 'BEGIN {printf "%.2f", cpu / cores}')
+            app_cpu_raw="$raw_app_cpu"
+        else
+            app_cpu_percent="$raw_app_cpu"
+            app_cpu_raw="$raw_app_cpu"
+        fi
+        
+        app_ram=$(echo "$stats" | awk '{print $2, $3, $4}')
+        # Parse app RAM - format is "USED / LIMIT" like "256 MiB / 512 MiB"
+        local app_ram_used_str=$(echo "$app_ram" | awk -F'/' '{print $1}' | xargs)
+        local app_ram_limit_str=$(echo "$app_ram" | awk -F'/' '{print $2}' | xargs)
+        app_ram_used_bytes=$(parse_ram_to_bytes "$app_ram_used_str")
+        app_ram_limit_bytes=$(parse_ram_to_bytes "$app_ram_limit_str")
+        
+        local sys_stats=$(get_system_stats)
+        sys_cpu=$(echo "$sys_stats" | awk '{print $1}' | tr -d '%')
+        sys_ram_used=$(echo "$sys_stats" | awk '{print $2}')
+        sys_ram_total=$(echo "$sys_stats" | awk '{print $3}')
+        sys_ram_pct=$(echo "$sys_stats" | awk '{print $4}' | tr -d '%')
+        sys_ram_used_bytes=$(parse_ram_to_bytes "$sys_ram_used")
+        sys_ram_total_bytes=$(parse_ram_to_bytes "$sys_ram_total")
+
+        local net_speed=$(get_net_speed)
+        rx_mbps=$(echo "$net_speed" | awk '{print $1}')
+        tx_mbps=$(echo "$net_speed" | awk '{print $2}')
+    fi
+
+    # Status
+    local status="stopped"
+    [ "$running_count" -gt 0 ] && status="running"
+
+    # Auto-start service detection
+    local auto_start_enabled="false"
+    local auto_start_type="none"
+    local service_status=""
+    
+    if command -v systemctl &>/dev/null && systemctl is-enabled conduit.service 2>/dev/null | grep -q "enabled"; then
+        auto_start_enabled="true"
+        auto_start_type="systemd"
+        service_status=$(systemctl is-active conduit.service 2>/dev/null)
+    elif command -v rc-status &>/dev/null && rc-status -a 2>/dev/null | grep -q "conduit"; then
+        auto_start_enabled="true"
+        auto_start_type="openrc"
+    elif [ -f /etc/init.d/conduit ]; then
+        auto_start_enabled="true"
+        auto_start_type="sysvinit"
+    fi
+
+    # Tracker status
+    local tracker_active="false"
+    is_tracker_active && tracker_active="true"
+
+    # Settings - format bandwidth display
+    local bandwidth_display=$(format_bandwidth "$BANDWIDTH")
+
+    # Build per-container JSON array
+    local containers_json="["
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local cname=$(get_container_name $i)
+        local c_running="false"
+        [ "${_c_running[$i]}" = "true" ] && c_running="true"
+        local c_connected="${_c_conn[$i]:-0}"
+        local c_connecting="${_c_cing[$i]:-0}"
+        local mc=$(get_container_max_clients $i)
+        local bw=$(get_container_bandwidth $i)
+        local bw_display=$(format_bandwidth "$bw")
+        
+        [ "$i" -gt 1 ] && containers_json="${containers_json},"
+        containers_json="${containers_json}{\"name\":\"${cname}\",\"running\":${c_running},\"connected\":${c_connected},\"connecting\":${c_connecting},\"max_clients\":${mc},\"bandwidth_mbps\":${bw},\"bandwidth\":\"${bw_display}\"}"
+    done
+    containers_json="${containers_json}]"
+
+    # Data cap info
+    local data_cap_json="null"
+    if [ "$DATA_CAP_GB" -gt 0 ] 2>/dev/null; then
+        local usage=$(get_data_usage)
+        local used_rx=$(echo "$usage" | awk '{print $1}')
+        local used_tx=$(echo "$usage" | awk '{print $2}')
+        local total_used=$((used_rx + used_tx + ${DATA_CAP_PRIOR_USAGE:-0}))
+        local cap_bytes=$(awk -v gb="$DATA_CAP_GB" 'BEGIN{printf "%.0f", gb * 1073741824}')
+        local used_display=$(awk -v b="$total_used" 'BEGIN {
+            if (b >= 1099511627776) printf "%.2f TB", b/1099511627776
+            else if (b >= 1073741824) printf "%.2f GB", b/1073741824
+            else if (b >= 1048576) printf "%.2f MB", b/1048576
+            else if (b >= 1024) printf "%.2f KB", b/1024
+            else printf "%d B", b
+        }')
+        data_cap_json="{\"used_bytes\":${total_used},\"used\":\"${used_display}\",\"limit_gb\":${DATA_CAP_GB},\"limit_bytes\":${cap_bytes}}"
+    fi
+
+    # Build and output the JSON
+    cat <<EOF
+{
+  "status": "${status}",
+  "uptime_seconds": $([ -n "$uptime" ] && echo "${uptime_seconds}" || echo "null"),
+  "uptime": $([ -n "$uptime" ] && echo "\"${uptime}\"" || echo "null"),
+  "containers": {
+    "running": ${running_count},
+    "total": ${CONTAINER_COUNT},
+    "details": ${containers_json}
+  },
+  "clients": {
+    "connected": ${connected},
+    "connecting": ${connecting},
+    "total": $((connected + connecting))
+  },
+  "traffic": {
+    "upload_bytes": ${total_up_bytes},
+    "download_bytes": ${total_down_bytes},
+    "upload": $([ -n "$upload_display" ] && echo "\"${upload_display}\"" || echo "null"),
+    "download": $([ -n "$download_display" ] && echo "\"${download_display}\"" || echo "null")
+  },
+  "resources": {
+    "app": {
+      "cpu_percent": $([ -n "$app_cpu_percent" ] && echo "${app_cpu_percent}" || echo "null"),
+      "cpu_raw_percent": $([ -n "$app_cpu_raw" ] && echo "${app_cpu_raw}" || echo "null"),
+      "cpu_cores": ${num_cores},
+      "ram": $([ -n "$app_ram" ] && echo "\"${app_ram}\"" || echo "null"),
+      "ram_used_bytes": $([ -n "$app_ram_used_bytes" ] && echo "${app_ram_used_bytes}" || echo "null"),
+      "ram_limit_bytes": $([ -n "$app_ram_limit_bytes" ] && echo "${app_ram_limit_bytes}" || echo "null")
+    },
+    "system": {
+      "cpu_percent": $([ -n "$sys_cpu" ] && echo "${sys_cpu}" || echo "null"),
+      "ram_used": $([ -n "$sys_ram_used" ] && echo "\"${sys_ram_used}\"" || echo "null"),
+      "ram_total": $([ -n "$sys_ram_total" ] && echo "\"${sys_ram_total}\"" || echo "null"),
+      "ram_percent": $([ -n "$sys_ram_pct" ] && echo "${sys_ram_pct}" || echo "null"),
+      "ram_used_bytes": $([ -n "$sys_ram_used_bytes" ] && echo "${sys_ram_used_bytes}" || echo "null"),
+      "ram_total_bytes": $([ -n "$sys_ram_total_bytes" ] && echo "${sys_ram_total_bytes}" || echo "null")
+    },
+    "network": {
+      "rx_mbps": ${rx_mbps},
+      "tx_mbps": ${tx_mbps}
+    }
+  },
+  "settings": {
+    "max_clients": ${MAX_CLIENTS},
+    "bandwidth_mbps": ${BANDWIDTH},
+    "bandwidth": "${bandwidth_display}",
+    "container_count": ${CONTAINER_COUNT},
+    "data_cap": ${data_cap_json}
+  },
+  "service": {
+    "auto_start": {
+      "enabled": ${auto_start_enabled},
+      "type": "${auto_start_type}"
+    },
+    "status": $([ -n "$service_status" ] && echo "\"${service_status}\"" || echo "null"),
+    "tracker_active": ${tracker_active}
+  }
+}
+EOF
 }
 
 start_conduit() {
@@ -3717,6 +4039,7 @@ show_help() {
     echo ""
     echo "Commands:"
     echo "  status    Show current status with resource usage"
+    echo "            --json, -j  Output status in JSON format"
     echo "  stats     View live statistics"
     echo "  logs      View raw Docker logs"
     echo "  health    Run health check on Conduit container"
@@ -4098,7 +4421,13 @@ update_conduit() {
 }
 
 case "${1:-menu}" in
-    status)   show_status ;;
+    status)
+        if [ "$2" = "--json" ] || [ "$2" = "-j" ]; then
+            show_status_json
+        else
+            show_status
+        fi
+        ;;
     stats)    show_live_stats ;;
     logs)     show_logs ;;
     health)   health_check ;;

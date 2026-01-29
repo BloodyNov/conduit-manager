@@ -77,12 +77,97 @@ After installation, use the `conduit` command:
 
 ### Status & Monitoring
 ```bash
-conduit status       # Show current status and resource usage
-conduit stats        # View live statistics (real-time dashboard)
-conduit logs         # View raw Docker logs
-conduit health       # Run health check diagnostics
-conduit peers        # Live peer traffic by country (GeoIP)
+conduit status            # Show current status and resource usage
+conduit status --json     # Output status in machine-readable JSON format
+conduit stats             # View live statistics (real-time dashboard)
+conduit logs              # View raw Docker logs
+conduit health            # Run health check diagnostics
+conduit peers             # Live peer traffic by country (GeoIP)
 ```
+
+#### JSON Status Output
+
+The `--json` (or `-j`) flag outputs all status information in a machine-readable JSON format, useful for scripting and monitoring integrations:
+
+```bash
+conduit status --json | jq '.status'          # Get running status
+conduit status -j | jq '.clients.connected'   # Get connected client count
+```
+
+<details>
+<summary>Example JSON output</summary>
+
+```json
+{
+  "status": "running",
+  "uptime_seconds": 9015,
+  "uptime": "2h 30m 15s",
+  "containers": {
+    "running": 2,
+    "total": 2,
+    "details": [
+      {
+        "name": "conduit",
+        "running": true,
+        "connected": 45,
+        "connecting": 3,
+        "max_clients": 200,
+        "bandwidth_mbps": -1,
+        "bandwidth": "Unlimited"
+      }
+    ]
+  },
+  "clients": {
+    "connected": 45,
+    "connecting": 3,
+    "total": 48
+  },
+  "traffic": {
+    "upload_bytes": 1073741824,
+    "download_bytes": 2147483648,
+    "upload": "1.00 GB",
+    "download": "2.00 GB"
+  },
+  "resources": {
+    "app": {
+      "cpu_percent": 5.25,
+      "cpu_raw_percent": 21.0,
+      "cpu_cores": 4,
+      "ram": "256 MiB / 512 MiB",
+      "ram_used_bytes": 268435456,
+      "ram_limit_bytes": 536870912
+    },
+    "system": {
+      "cpu_percent": 15.5,
+      "ram_used": "4.0 GiB",
+      "ram_total": "16.0 GiB",
+      "ram_percent": 25,
+      "ram_used_bytes": 4294967296,
+      "ram_total_bytes": 17179869184
+    },
+    "network": {
+      "rx_mbps": 10.5,
+      "tx_mbps": 5.2
+    }
+  },
+  "settings": {
+    "max_clients": 200,
+    "bandwidth_mbps": -1,
+    "bandwidth": "Unlimited",
+    "container_count": 2,
+    "data_cap": null
+  },
+  "service": {
+    "auto_start": {
+      "enabled": true,
+      "type": "systemd"
+    },
+    "status": "active",
+    "tracker_active": true
+  }
+}
+```
+</details>
 
 ### Rewards
 ```bash
@@ -267,11 +352,21 @@ sudo bash conduit.sh
 
 ### وضعیت و مانیتورینگ
 ```bash
-conduit status       # نمایش وضعیت و مصرف منابع
-conduit stats        # داشبورد زنده (لحظه‌ای)
-conduit logs         # لاگ‌های داکر
-conduit health       # بررسی سلامت سیستم
-conduit peers        # ترافیک بر اساس کشور (GeoIP)
+conduit status            # نمایش وضعیت و مصرف منابع
+conduit status --json     # خروجی وضعیت در فرمت JSON (برای اسکریپت‌ها)
+conduit stats             # داشبورد زنده (لحظه‌ای)
+conduit logs              # لاگ‌های داکر
+conduit health            # بررسی سلامت سیستم
+conduit peers             # ترافیک بر اساس کشور (GeoIP)
+```
+
+#### خروجی JSON وضعیت
+
+با استفاده از فلگ `--json` یا `-j` می‌توانید اطلاعات وضعیت را در فرمت JSON دریافت کنید. این خروجی برای اسکریپت‌نویسی و ادغام با سیستم‌های مانیتورینگ مناسب است:
+
+```bash
+conduit status --json | jq '.status'          # دریافت وضعیت اجرا
+conduit status -j | jq '.clients.connected'   # تعداد کلاینت‌های متصل
 ```
 
 ### پاداش
