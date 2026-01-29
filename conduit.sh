@@ -1536,8 +1536,16 @@ process_batch() {
         fi
         # Normalize
         case "$country" in
-            *"Iran, Islamic Republic of"*) country="Iran - #FreeIran" ;;
-            *"Moldova, Republic of"*) country="Moldova" ;;
+            *Iran*) country="Iran - #FreeIran" ;;
+            *Moldova*) country="Moldova" ;;
+            *Korea*Republic*|*"South Korea"*) country="South Korea" ;;
+            *"Russian Federation"*|*Russia*) country="Russia" ;;
+            *"Taiwan"*) country="Taiwan" ;;
+            *"Venezuela"*) country="Venezuela" ;;
+            *"Bolivia"*) country="Bolivia" ;;
+            *"Tanzania"*) country="Tanzania" ;;
+            *"Viet Nam"*|*Vietnam*) country="Vietnam" ;;
+            *"Syrian Arab Republic"*) country="Syria" ;;
         esac
         echo "${ip}|${country}" >> "$geo_map"
     done < "$PERSIST_DIR/batch_ips"
