@@ -1517,62 +1517,104 @@ AWK_BIN=$(command -v gawk 2>/dev/null || command -v awk 2>/dev/null || echo "awk
 LOCAL_IP=$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") print $(i+1)}')
 [ -z "$LOCAL_IP" ] && LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 
-# Main capture loop: tcpdump -> awk -> process
-while true; do
-    # Process tcpdump output in awk, sync every 15 seconds
-    while IFS= read -r line; do
-        if [ "$line" = "SYNC_MARKER" ]; then
-            continue
+# Batch process: resolve GeoIP + merge into cumulative files in bulk
+process_batch() {
+    local batch="$1"
+    local resolved="$PERSIST_DIR/resolved_batch"
+    local geo_map="$PERSIST_DIR/geo_map"
+
+    # Step 1: Extract unique IPs and bulk-resolve GeoIP
+    # Read cache once, resolve uncached, produce ip|country mapping
+    $AWK_BIN -F'|' '{print $2}' "$batch" | sort -u > "$PERSIST_DIR/batch_ips"
+
+    # Build geo mapping: read cache + resolve missing
+    > "$geo_map"
+    while IFS= read -r ip; do
+        [ -z "$ip" ] && continue
+        country=""
+        if [ -f "$GEOIP_CACHE" ]; then
+            country=$(grep "^${ip}|" "$GEOIP_CACHE" 2>/dev/null | head -1 | cut -d'|' -f2)
         fi
-        # Parse: direction|IP|bytes
-        local_dir=$(echo "$line" | cut -d'|' -f1)
-        local_ip_addr=$(echo "$line" | cut -d'|' -f2)
-        local_bytes=$(echo "$line" | cut -d'|' -f3)
-        [ -z "$local_ip_addr" ] && continue
-
-        # Resolve country
-        country=$(geo_lookup "$local_ip_addr")
-
-        # Normalize country names
+        if [ -z "$country" ]; then
+            country=$(geo_lookup "$ip")
+        fi
+        # Normalize
         case "$country" in
             *"Iran, Islamic Republic of"*) country="Iran - #FreeIran" ;;
             *"Moldova, Republic of"*) country="Moldova" ;;
         esac
+        echo "${ip}|${country}" >> "$geo_map"
+    done < "$PERSIST_DIR/batch_ips"
 
-        # Update cumulative data
-        if [ -f "$STATS_FILE" ]; then
-            existing=$(grep "^${country}|" "$STATS_FILE" 2>/dev/null | head -1)
-            if [ -n "$existing" ]; then
-                old_from=$(echo "$existing" | cut -d'|' -f2)
-                old_to=$(echo "$existing" | cut -d'|' -f3)
-                if [ "$local_dir" = "FROM" ]; then
-                    new_from=$((old_from + local_bytes))
-                    new_to=$old_to
-                else
-                    new_from=$old_from
-                    new_to=$((old_to + local_bytes))
-                fi
-                # Update in place using temp file
-                grep -v "^${country}|" "$STATS_FILE" > "$STATS_FILE.tmp" 2>/dev/null || true
-                echo "${country}|${new_from}|${new_to}" >> "$STATS_FILE.tmp"
-                mv "$STATS_FILE.tmp" "$STATS_FILE"
-            else
-                if [ "$local_dir" = "FROM" ]; then
-                    echo "${country}|${local_bytes}|0" >> "$STATS_FILE"
-                else
-                    echo "${country}|0|${local_bytes}" >> "$STATS_FILE"
-                fi
+    # Step 2: Single awk pass — merge batch into cumulative_data + write snapshot
+    $AWK_BIN -F'|' -v snap="$SNAPSHOT_FILE" '
+        FILENAME == ARGV[1] { geo[$1] = $2; next }
+        FILENAME == ARGV[2] { existing[$1] = $2 "|" $3; next }
+        FILENAME == ARGV[3] {
+            dir = $1; ip = $2; bytes = $3 + 0
+            c = geo[ip]
+            if (c == "") c = "Unknown"
+            if (dir == "FROM") from_bytes[c] += bytes
+            else to_bytes[c] += bytes
+            # Also collect snapshot lines
+            print dir "|" c "|" bytes "|" ip > snap
+            next
+        }
+        END {
+            # Merge existing + new
+            for (c in existing) {
+                split(existing[c], v, "|")
+                f = v[1] + 0; t = v[2] + 0
+                f += from_bytes[c] + 0
+                t += to_bytes[c] + 0
+                print c "|" f "|" t
+                delete from_bytes[c]
+                delete to_bytes[c]
+            }
+            # New countries not in existing
+            for (c in from_bytes) {
+                f = from_bytes[c] + 0
+                t = to_bytes[c] + 0
+                print c "|" f "|" t
+                delete to_bytes[c]
+            }
+            for (c in to_bytes) {
+                print c "|0|" to_bytes[c] + 0
+            }
+        }
+    ' "$geo_map" "$STATS_FILE" "$batch" > "$STATS_FILE.tmp" && mv "$STATS_FILE.tmp" "$STATS_FILE"
+
+    # Step 3: Single awk pass — merge batch IPs into cumulative_ips
+    $AWK_BIN -F'|' '
+        FILENAME == ARGV[1] { geo[$1] = $2; next }
+        FILENAME == ARGV[2] { seen[$0] = 1; print; next }
+        FILENAME == ARGV[3] {
+            ip = $2; c = geo[ip]
+            if (c == "") c = "Unknown"
+            key = c "|" ip
+            if (!(key in seen)) { seen[key] = 1; print key }
+        }
+    ' "$geo_map" "$IPS_FILE" "$batch" > "$IPS_FILE.tmp" && mv "$IPS_FILE.tmp" "$IPS_FILE"
+
+    rm -f "$PERSIST_DIR/batch_ips" "$geo_map" "$resolved"
+}
+
+# Main capture loop: tcpdump -> awk -> batch process
+while true; do
+    BATCH_FILE="$PERSIST_DIR/batch_tmp"
+    > "$BATCH_FILE"
+
+    while IFS= read -r line; do
+        if [ "$line" = "SYNC_MARKER" ]; then
+            # Process entire batch at once
+            if [ -s "$BATCH_FILE" ]; then
+                > "$SNAPSHOT_FILE"
+                process_batch "$BATCH_FILE"
             fi
+            > "$BATCH_FILE"
+            continue
         fi
-
-        # Update cumulative IPs
-        if ! grep -q "^${country}|${local_ip_addr}$" "$IPS_FILE" 2>/dev/null; then
-            echo "${country}|${local_ip_addr}" >> "$IPS_FILE"
-        fi
-
-        # Write snapshot for speed calculation
-        echo "${local_dir}|${country}|${local_bytes}|${local_ip_addr}" >> "$SNAPSHOT_FILE"
-
+        echo "$line" >> "$BATCH_FILE"
     done < <($TCPDUMP_BIN -tt -l -ni any -n -q "(tcp or udp) and not port 22" 2>/dev/null | $AWK_BIN -v local_ip="$LOCAL_IP" '
     BEGIN { last_sync = 0 }
     {
