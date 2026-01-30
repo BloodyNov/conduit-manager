@@ -932,6 +932,10 @@ run_conduit_container() {
     local vol=$(get_volume_name $idx)
     local mc=$(get_container_max_clients $idx)
     local bw=$(get_container_bandwidth $idx)
+    # Remove any existing container with the same name to avoid conflicts
+    if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
+        docker rm -f "$name" 2>/dev/null || true
+    fi
     docker run -d \
         --name "$name" \
         --restart unless-stopped \
@@ -2459,6 +2463,28 @@ start_conduit() {
 
     echo "Starting Conduit ($CONTAINER_COUNT container(s))..."
 
+    # Check if any stopped containers exist that will be recreated
+    local has_stopped=false
+    for i in $(seq 1 $CONTAINER_COUNT); do
+        local name=$(get_container_name $i)
+        if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
+            if ! docker ps 2>/dev/null | grep -q "[[:space:]]${name}$"; then
+                has_stopped=true
+                break
+            fi
+        fi
+    done
+    if [ "$has_stopped" = true ]; then
+        echo -e "${YELLOW}⚠ Note: This will remove and recreate stopped containers with fresh instances.${NC}"
+        echo -e "${YELLOW}  Your data volumes are preserved, but container logs will be reset.${NC}"
+        echo -e "${YELLOW}  To resume stopped containers without recreating, use the 'c' menu → [s].${NC}"
+        read -p "  Continue? (y/n): " confirm < /dev/tty || true
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+            echo -e "  ${CYAN}Cancelled.${NC}"
+            return 0
+        fi
+    fi
+
     for i in $(seq 1 $CONTAINER_COUNT); do
         local name=$(get_container_name $i)
         local vol=$(get_volume_name $i)
@@ -3032,9 +3058,13 @@ manage_containers() {
                     for i in $(seq 1 $CONTAINER_COUNT); do
                         local name=$(get_container_name $i)
                         local vol=$(get_volume_name $i)
-                        docker volume create "$vol" 2>/dev/null || true
-                        fix_volume_permissions $i
-                        run_conduit_container $i
+                        if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
+                            docker start "$name" 2>/dev/null
+                        else
+                            docker volume create "$vol" 2>/dev/null || true
+                            fix_volume_permissions $i
+                            run_conduit_container $i
+                        fi
                         if [ $? -eq 0 ]; then
                             echo -e "  ${GREEN}✓ ${name} started${NC}"
                         else
@@ -3044,9 +3074,13 @@ manage_containers() {
                 elif [[ "$sc_idx" =~ ^[1-5]$ ]] && [ "$sc_idx" -le "$CONTAINER_COUNT" ]; then
                     local name=$(get_container_name $sc_idx)
                     local vol=$(get_volume_name $sc_idx)
-                    docker volume create "$vol" 2>/dev/null || true
-                    fix_volume_permissions $sc_idx
-                    run_conduit_container $sc_idx
+                    if docker ps -a 2>/dev/null | grep -q "[[:space:]]${name}$"; then
+                        docker start "$name" 2>/dev/null
+                    else
+                        docker volume create "$vol" 2>/dev/null || true
+                        fix_volume_permissions $sc_idx
+                        run_conduit_container $sc_idx
+                    fi
                     if [ $? -eq 0 ]; then
                         echo -e "  ${GREEN}✓ ${name} started${NC}"
                     else
@@ -3062,13 +3096,19 @@ manage_containers() {
                 if [ "$sc_idx" = "all" ]; then
                     for i in $(seq 1 $CONTAINER_COUNT); do
                         local name=$(get_container_name $i)
-                        docker stop "$name" 2>/dev/null || true
-                        echo -e "  ${YELLOW}✓ ${name} stopped${NC}"
+                        if docker stop "$name" 2>/dev/null; then
+                            echo -e "  ${YELLOW}✓ ${name} stopped${NC}"
+                        else
+                            echo -e "  ${YELLOW}  ${name} was not running${NC}"
+                        fi
                     done
                 elif [[ "$sc_idx" =~ ^[1-5]$ ]] && [ "$sc_idx" -le "$CONTAINER_COUNT" ]; then
                     local name=$(get_container_name $sc_idx)
-                    docker stop "$name" 2>/dev/null || true
-                    echo -e "  ${YELLOW}✓ ${name} stopped${NC}"
+                    if docker stop "$name" 2>/dev/null; then
+                        echo -e "  ${YELLOW}✓ ${name} stopped${NC}"
+                    else
+                        echo -e "  ${YELLOW}  ${name} was not running${NC}"
+                    fi
                 else
                     echo -e "  ${RED}Invalid.${NC}"
                 fi
@@ -3087,8 +3127,11 @@ manage_containers() {
                     fi
                     for i in $(seq 1 $CONTAINER_COUNT); do
                         local name=$(get_container_name $i)
-                        docker restart "$name" 2>/dev/null || true
-                        echo -e "  ${GREEN}✓ ${name} restarted${NC}"
+                        if docker restart "$name" 2>/dev/null; then
+                            echo -e "  ${GREEN}✓ ${name} restarted${NC}"
+                        else
+                            echo -e "  ${RED}✗ Failed to restart ${name}${NC}"
+                        fi
                     done
                     # Restart tracker to pick up new container state
                     if command -v systemctl &>/dev/null && systemctl is-active --quiet conduit-tracker.service 2>/dev/null; then
@@ -3096,8 +3139,11 @@ manage_containers() {
                     fi
                 elif [[ "$sc_idx" =~ ^[1-5]$ ]] && [ "$sc_idx" -le "$CONTAINER_COUNT" ]; then
                     local name=$(get_container_name $sc_idx)
-                    docker restart "$name" 2>/dev/null || true
-                    echo -e "  ${GREEN}✓ ${name} restarted${NC}"
+                    if docker restart "$name" 2>/dev/null; then
+                        echo -e "  ${GREEN}✓ ${name} restarted${NC}"
+                    else
+                        echo -e "  ${RED}✗ Failed to restart ${name}${NC}"
+                    fi
                 else
                     echo -e "  ${RED}Invalid.${NC}"
                 fi
