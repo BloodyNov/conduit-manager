@@ -3888,6 +3888,8 @@ health_check() {
             else
                 echo -e "${GREEN}OK${NC} (Connected, awaiting peers)"
             fi
+        elif echo "$hc_logs" | grep -q "\[OK\] Connected to Psiphon network"; then
+            echo -e "${GREEN}OK${NC} (Connected, no stats available)"
         else
             local info_lines=0
             if [ -n "$hc_logs" ]; then
